@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Shape Shifter</title>
+  <!-- d3.js と d3-interpolate-path をCDNで読み込み -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="https://unpkg.com/d3-interpolate-path@0.0.8/build/d3-interpolate-path.min.js"></script>
+  <style>
+    /* 全体を中央配置 */
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      background: #f0f0f0;
+      font-family: sans-serif;
+    }
+    /* SVGのスタイル */
+    #svg {
+      border: 1px solid #ccc;
+      background: #fff;
+      margin-bottom: 20px;
+    }
+    /* ボタン配置 */
+    #choices {
+      display: flex;
+      gap: 10px;
+    }
+    button.choice {
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    /* スコア・ライフ表示 */
+    #status {
+      margin-bottom: 10px;
+      font-size: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div id="game">
+    <!-- 中央のSVG。viewBoxを使って座標は統一 -->
+    <svg id="svg" viewBox="0 0 100 100" width="300" height="300">
+      <path id="shape" d=""></path>
+    </svg>
+    <div id="status">Score: 0   Lives: 3</div>
+    <!-- 下部の選択肢ボタン -->
+    <div id="choices">
+      <button class="choice"></button>
+      <button class="choice"></button>
+      <button class="choice"></button>
+    </div>
+  </div>
+  
+  <script>
+  // ゲームに使う形のデータ（名前とSVGパス）
+  const shapes = [
+    { name: "Circle", path: "M50,10 A40,40 0 1,1 49.9,10 Z" },
+    { name: "Triangle", path: "M50,10 L90,90 L10,90 Z" },
+    { name: "Star", path: "M50,15 L61,39 L88,39 L66,57 L75,84 L50,68 L25,84 L34,57 L12,39 L39,39 Z" },
+    { name: "Square", path: "M20,20 L80,20 L80,80 L20,80 Z" }
+  ];
+  
+  let currentShape = null;  // 現在の形
+  let nextShape = null;     // 次に出現する形
+  let score = 0;
+  let lives = 3;
+  
+  // 予測時間・補間時間（初回は2000msずつ）、各ラウンドで徐々に短くなる
+  let answerTime = 2000;    // ユーザーが回答する時間
+  let transformTime = 2000; // 形の補間時間
+  const minAnswerTime = 500;
+  const minTransformTime = 500;
+  
+  let answered = false;     // そのラウンドで既に回答済みか
+  let playerAnswer = null;  // ユーザーの選択
+  
+  // ステータス表示の更新
+  function updateStatus() {
+    d3.select("#status").text(`Score: ${score}   Lives: ${lives}`);
+  }
+  
+  // 配列をシャッフルするヘルパー関数
+  function shuffle(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+       const j = Math.floor(Math.random() * (i + 1));
+       [array[i], array[j]] = [array[j], array[i]];
+    }
+    return array;
+  }
+  
+  // 1ラウンドの開始処理
+  function startRound() {
+    answered = false;
+    playerAnswer = null;
+    
+    // 現在の形と違う形を次の形として選ぶ（初回はどれでもOK）
+    let availableShapes = shapes;
+    if (currentShape) {
+      availableShapes = shapes.filter(s => s.name !== currentShape.name);
+    }
+    nextShape = availableShapes[Math.floor(Math.random() * availableShapes.length)];
+    
+    // 選択肢：正解(nextShape.name)と2つのダミーを用意
+    let choices = [nextShape.name];
+    let distractors = shapes.filter(s => s.name !== nextShape.name);
+    while (distractors.length > 0 && choices.length < 3) {
+      let idx = Math.floor(Math.random() * distractors.length);
+      choices.push(distractors[idx].name);
+      distractors.splice(idx, 1);
+    }
+    choices = shuffle(choices);
+    
+    // ボタンの更新とクリックイベントの設定
+    d3.selectAll(".choice")
+      .attr("disabled", null)
+      .text(function(d, i) { return choices[i]; })
+      .on("click", function(event, d) {
+         if (!answered) {
+            playerAnswer = d3.select(this).text();
+            answered = true;
+            // 回答後はすべてのボタンを無効化
+            d3.selectAll(".choice").attr("disabled", true);
+         }
+      });
+      
+    // answerTime後にボタンを無効化し、補間アニメーションを開始
+    setTimeout(() => {
+      d3.selectAll(".choice").attr("disabled", true);
+      
+      let path = d3.select("#shape");
+      // 初回ラウンドの場合は現在の形がないので、次の形をそのまま設定して次ラウンドへ
+      if (!currentShape) {
+         currentShape = nextShape;
+         path.attr("d", currentShape.path);
+         setTimeout(startRound, answerTime + transformTime);
+         return;
+      }
+      // 補間アニメーション
+      path.transition()
+         .duration(transformTime)
+         .attrTween("d", function() {
+             let interpolator = d3.interpolatePath(currentShape.path, nextShape.path);
+             return function(t) { return interpolator(t); };
+         })
+         .on("end", function() {
+             // 回答の評価（未回答なら playerAnswer は null なので不正解）
+             if (playerAnswer === nextShape.name) {
+                score++;
+             } else {
+                lives--;
+             }
+             updateStatus();
+             if (lives <= 0) {
+               showGameOver();
+             } else {
+               // ラウンド毎に時間を短縮してゲームスピードを上げる
+               answerTime = Math.max(minAnswerTime, answerTime * 0.95);
+               transformTime = Math.max(minTransformTime, transformTime * 0.95);
+               // 次のラウンドへ。現在の形を更新しておく
+               currentShape = nextShape;
+               setTimeout(startRound, 500);
+             }
+         });
+    }, answerTime);
+  }
+  
+  // ゲームオーバー時の処理
+  function showGameOver() {
+    d3.select("#status").text(`Game Over! Final Score: ${score}`);
+    d3.selectAll(".choice").attr("disabled", true);
+  }
+  
+  // ページ読み込み完了後にゲーム開始
+  window.onload = function() {
+    updateStatus();
+    // 初期形をランダムに選択
+    currentShape = shapes[Math.floor(Math.random() * shapes.length)];
+    d3.select("#shape").attr("d", currentShape.path);
+    // 少し待ってから最初のラウンド開始
+    setTimeout(startRound, 1000);
+  };
+  </script>
+</body>
+</html>
